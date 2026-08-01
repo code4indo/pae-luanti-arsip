@@ -268,9 +268,52 @@ core.register_on_player_receive_fields(function(player, formname, fields)
 end)
 
 --------------------------------------------------------------------
--- 4. PERINTAH CHAT UNTUK GURU (setup cepat arena misi)
---    /pae_setup  -> memunculkan NPC + menyebar dokumen di sekitar guru
+-- 4. SPAWN ARENA MISI (fungsi bersama) + PERINTAH GURU
+--    Dipakai oleh auto-spawn (saat pemain masuk) & perintah /pae_setup.
 --------------------------------------------------------------------
+
+-- Cek apakah sudah ada NPC Bu Arsi di sekitar posisi (anti-dobel).
+local function ada_npc_didekat(pos, radius)
+    for _, obj in ipairs(core.get_objects_inside_radius(pos, radius or 24)) do
+        local le = obj:get_luaentity()
+        if le and le.name == "pae_arsip:npc_arsi" then
+            return true
+        end
+    end
+    return false
+end
+
+-- Bangun arena Misi 1 (NPC + dokumen) di sekitar posisi tertentu.
+-- Mengembalikan false bila dilewati karena NPC sudah ada di dekatnya.
+function pae_arsip.spawn_arena(pos, force)
+    if not pos then return false end
+    -- Anti-dobel: jangan spawn NPC baru bila sudah ada di sekitar
+    if not force and ada_npc_didekat(pos, 24) then
+        return false
+    end
+
+    -- Spawn NPC Bu Arsi 2 blok di depan pemain
+    local npc_pos = {x = pos.x + 2, y = pos.y, z = pos.z}
+    core.add_entity(npc_pos, "pae_arsip:npc_arsi")
+
+    -- Sebar 3 dokumen prioritas + 2 pengecoh di sekitar
+    local titik_prioritas = {
+        {x = pos.x + 4, y = pos.y, z = pos.z},
+        {x = pos.x - 3, y = pos.y, z = pos.z + 2},
+        {x = pos.x + 1, y = pos.y, z = pos.z - 4},
+    }
+    local titik_biasa = {
+        {x = pos.x - 2, y = pos.y, z = pos.z - 2},
+        {x = pos.x + 3, y = pos.y, z = pos.z + 3},
+    }
+    for _, tp in ipairs(titik_prioritas) do
+        core.set_node(tp, {name = "pae_arsip:node_prioritas"})
+    end
+    for _, tb in ipairs(titik_biasa) do
+        core.set_node(tb, {name = "pae_arsip:node_biasa"})
+    end
+    return true
+end
 
 core.register_chatcommand("pae_setup", {
     description = "Setup arena Misi 1 PAE (NPC + dokumen) di sekitar pemain",
@@ -278,29 +321,8 @@ core.register_chatcommand("pae_setup", {
     func = function(name)
         local player = core.get_player_by_name(name)
         if not player then return false, "Pemain tidak ditemukan." end
-        local pos = player:get_pos()
-
-        -- Spawn NPC Bu Arsi 2 blok di depan pemain
-        local npc_pos = {x = pos.x + 2, y = pos.y, z = pos.z}
-        core.add_entity(npc_pos, "pae_arsip:npc_arsi")
-
-        -- Sebar 3 dokumen prioritas + 2 pengecoh di sekitar
-        local titik_prioritas = {
-            {x = pos.x + 4, y = pos.y, z = pos.z},
-            {x = pos.x - 3, y = pos.y, z = pos.z + 2},
-            {x = pos.x + 1, y = pos.y, z = pos.z - 4},
-        }
-        local titik_biasa = {
-            {x = pos.x - 2, y = pos.y, z = pos.z - 2},
-            {x = pos.x + 3, y = pos.y, z = pos.z + 3},
-        }
-        for _, tp in ipairs(titik_prioritas) do
-            core.set_node(tp, {name = "pae_arsip:node_prioritas"})
-        end
-        for _, tb in ipairs(titik_biasa) do
-            core.set_node(tb, {name = "pae_arsip:node_biasa"})
-        end
-
+        -- force = true: guru selalu boleh membuat/mengatur ulang arena
+        pae_arsip.spawn_arena(player:get_pos(), true)
         return true, "[PAE] Arena Misi 1 siap! Temui Bu Arsi & mulai mengumpulkan bahan."
     end,
 })
@@ -321,6 +343,54 @@ core.register_on_leaveplayer(function(player)
     local name = player:get_player_name()
     local p = pae_arsip.players[name]
     if p then p.hud = nil end
+end)
+
+--------------------------------------------------------------------
+-- 5. AUTO-SPAWN SAAT PEMAIN MASUK (Opsi D)
+--    Pemain langsung menemukan arena tanpa perlu tahu perintah apa pun:
+--      - NPC + dokumen otomatis muncul di dekat pemain (anti-dobel).
+--      - Pesan sambutan berpetunjuk dikirim ke chat.
+--      - HUD objektif langsung aktif di pojok kiri atas.
+--------------------------------------------------------------------
+
+core.register_on_joinplayer(function(player)
+    local name = player:get_player_name()
+
+    -- Siapkan state pemain (pertahankan progress bila sudah ada)
+    if not pae_arsip.players[name] then
+        pae_arsip.players[name] = {active = false, terkumpul = 0, selesai = false}
+    else
+        pae_arsip.players[name].hud = nil  -- HUD lama tak berlaku sesudah login ulang
+    end
+
+    -- Beri jeda agar posisi & map di sekitar pemain sudah termuat penuh
+    core.after(2.0, function()
+        local pl = core.get_player_by_name(name)
+        if not pl then return end
+        local p = pae_arsip.players[name]
+
+        -- Tampilkan HUD objektif untuk semua pemain
+        pae_arsip.update_hud(name)
+
+        -- Auto-spawn arena hanya bila misi belum diselesaikan pemain ini
+        if p and not p.selesai then
+            local dibuat = pae_arsip.spawn_arena(pl:get_pos(), false)
+            core.chat_send_player(name,
+                core.colorize("#FFD700", "[PAE] ") ..
+                "Selamat datang di Misi 1: Pengumpulan Bahan Arsip!")
+            if dibuat then
+                core.chat_send_player(name,
+                    core.colorize("#7CFC00", "[Petunjuk] ") ..
+                    "Bu Arsi (Kepala Arsip) ada di dekatmu - klik kanan untuk memulai. " ..
+                    "Ikuti objektif di pojok kiri atas layar.")
+            else
+                core.chat_send_player(name,
+                    core.colorize("#7CFC00", "[Petunjuk] ") ..
+                    "Cari Bu Arsi (Kepala Arsip) di sekitarmu - klik kanan untuk memulai. " ..
+                    "Ikuti objektif di pojok kiri atas layar.")
+            end
+        end
+    end)
 end)
 
 core.log("action", "[pae_arsip] Mod Misi 1 (Pengumpulan Bahan Arsip) berhasil dimuat.")
