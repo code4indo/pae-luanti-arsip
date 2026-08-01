@@ -28,6 +28,66 @@ pae_arsip.players = {}   -- menyimpan progress tiap pemain
 local TARGET_PRIORITAS = 3  -- jumlah dokumen prioritas yang harus dikumpulkan
 
 --------------------------------------------------------------------
+-- 0. SISTEM HUD OBJEKTIF (persisten di pojok layar)
+--    Menampilkan tujuan misi + progress agar siswa tidak bingung.
+--    Selalu terlihat selama misi berjalan, update otomatis tiap aksi.
+--------------------------------------------------------------------
+
+-- Bangun teks objektif sesuai status pemain
+local function teks_objektif(p)
+    if not p then return "" end
+    if p.selesai then
+        return "MISI 1 SELESAI - Bahan arsip terkumpul!"
+    elseif p.active then
+        if p.terkumpul >= TARGET_PRIORITAS then
+            return "Misi: Kembali & lapor ke Bu Arsi (klik kanan)"
+        end
+        return "Misi: Kumpulkan dokumen PRIORITAS  " ..
+               p.terkumpul .. "/" .. TARGET_PRIORITAS ..
+               "  (pukul/klik kiri berkasnya)"
+    else
+        return "Misi: Temui Bu Arsi (klik kanan) untuk memulai"
+    end
+end
+
+-- Perbarui / buat HUD objektif untuk pemain
+function pae_arsip.update_hud(name)
+    local player = core.get_player_by_name(name)
+    if not player then return end
+    local p = pae_arsip.players[name]
+    if not p then return end
+    local teks = teks_objektif(p)
+    local warna = p.selesai and 0x00FFFF or (p.active and 0x7CFC00 or 0xFFD700)
+
+    if p.hud then
+        -- Perbarui HUD yang sudah ada
+        player:hud_change(p.hud, "text", teks)
+        player:hud_change(p.hud, "number", warna)
+    else
+        -- Buat elemen HUD baru (pojok kiri atas)
+        p.hud = player:hud_add({
+            hud_elem_type = "text",
+            position = {x = 0, y = 0},
+            offset = {x = 12, y = 34},
+            alignment = {x = 1, y = 1},
+            scale = {x = 100, y = 100},
+            text = teks,
+            number = warna,
+        })
+    end
+end
+
+-- Hapus HUD objektif pemain (mis. saat keluar / reset)
+function pae_arsip.clear_hud(name)
+    local player = core.get_player_by_name(name)
+    local p = pae_arsip.players[name]
+    if player and p and p.hud then
+        player:hud_remove(p.hud)
+    end
+    if p then p.hud = nil end
+end
+
+--------------------------------------------------------------------
 -- 1. DEFINISI ITEM DOKUMEN
 --    Ada 2 jenis: PRIORITAS (layak arsip) & BIASA (pengecoh).
 --------------------------------------------------------------------
@@ -72,6 +132,7 @@ core.register_node("pae_arsip:node_prioritas", {
         -- Tambah progress
         p.terkumpul = p.terkumpul + 1
         core.remove_node(pos)
+        pae_arsip.update_hud(name)  -- perbarui HUD objektif
         core.chat_send_player(name,
             core.colorize("#7CFC00", "[BENAR] ") ..
             "Dokumen prioritas dikumpulkan! (" .. p.terkumpul .. "/" .. TARGET_PRIORITAS .. ")")
@@ -167,6 +228,8 @@ core.register_entity("pae_arsip:npc_arsi", {
             pae_arsip.players[name] = {active = false, terkumpul = 0, selesai = false}
             p = pae_arsip.players[name]
         end
+        -- Pastikan HUD objektif tampil sejak interaksi pertama
+        pae_arsip.update_hud(name)
         if p.selesai then
             core.chat_send_player(name,
                 core.colorize("#00FFFF", "[Bu Arsi] ") ..
@@ -174,12 +237,17 @@ core.register_entity("pae_arsip:npc_arsi", {
         elseif p.active and p.terkumpul >= TARGET_PRIORITAS then
             p.selesai = true
             p.active = false
+            pae_arsip.update_hud(name)  -- perbarui HUD ke status selesai
             tampil_dialog_selesai(name)
         elseif p.active then
+            -- Instruksi BISA DIAKSES ULANG: tampilkan lagi cara main + progress
             core.chat_send_player(name,
                 core.colorize("#FFD700", "[Bu Arsi] ") ..
-                "Kamu baru mengumpulkan " .. p.terkumpul .. "/" .. TARGET_PRIORITAS ..
-                " dokumen prioritas. Lanjutkan!")
+                "Progresmu: " .. p.terkumpul .. "/" .. TARGET_PRIORITAS .. " dokumen prioritas.")
+            core.chat_send_player(name,
+                core.colorize("#FFD700", "[Cara Main] ") ..
+                "Cari berkas PRIORITAS lalu PUKUL (klik kiri) untuk mengambilnya. " ..
+                "Hindari berkas biasa/pengecoh. Lihat objektif di pojok kiri atas layar.")
         else
             tampil_dialog_mulai(name)
         end
@@ -190,7 +258,9 @@ core.register_entity("pae_arsip:npc_arsi", {
 core.register_on_player_receive_fields(function(player, formname, fields)
     local name = player:get_player_name()
     if formname == "pae_arsip:dialog_mulai" and fields.terima then
-        pae_arsip.players[name] = {active = true, terkumpul = 0, selesai = false}
+        local prev = pae_arsip.players[name]
+        pae_arsip.players[name] = {active = true, terkumpul = 0, selesai = false, hud = prev and prev.hud or nil}
+        pae_arsip.update_hud(name)  -- tampilkan objektif misi di HUD
         core.chat_send_player(name,
             core.colorize("#7CFC00", "[MISI DIMULAI] ") ..
             "Kumpulkan " .. TARGET_PRIORITAS .. " dokumen prioritas dengan MEMUKUL (klik kiri) berkasnya.")
@@ -239,9 +309,18 @@ core.register_chatcommand("pae_setup", {
 core.register_chatcommand("pae_reset", {
     description = "Reset progress misi PAE milik sendiri",
     func = function(name)
-        pae_arsip.players[name] = {active = false, terkumpul = 0, selesai = false}
+        local prev = pae_arsip.players[name]
+        pae_arsip.players[name] = {active = false, terkumpul = 0, selesai = false, hud = prev and prev.hud or nil}
+        pae_arsip.update_hud(name)  -- perbarui HUD ke status awal
         return true, "[PAE] Progress misimu telah direset."
     end,
 })
+
+-- Bersihkan referensi HUD saat pemain keluar (agar tidak menumpuk saat login lagi)
+core.register_on_leaveplayer(function(player)
+    local name = player:get_player_name()
+    local p = pae_arsip.players[name]
+    if p then p.hud = nil end
+end)
 
 core.log("action", "[pae_arsip] Mod Misi 1 (Pengumpulan Bahan Arsip) berhasil dimuat.")
