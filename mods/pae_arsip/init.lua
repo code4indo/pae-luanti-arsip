@@ -144,14 +144,20 @@ core.register_entity("pae_arsip:npc_arsi", {
         physical = true,
         collide_with_objects = true,
         collisionbox = {-0.35, -1.0, -0.35, 0.35, 0.8, 0.35},
-        visual = "upright_sprite",
-        visual_size = {x = 1, y = 2},
-        textures = {"pae_npc_arsi.png"},
+        -- Model 3D humanoid (memakai model bawaan Minetest Game: character.b3d)
+        visual = "mesh",
+        mesh = "character.b3d",
+        textures = {"pae_npc_arsi.png"},  -- skin humanoid layout 64x32
+        visual_size = {x = 1, y = 1},
         static_save = true,
         infotext = "Bu Arsi (Kepala Arsip)\nKlik kanan untuk bicara",
     },
     on_activate = function(self, staticdata)
         self.object:set_armor_groups({immortal = 1})  -- NPC tak bisa dibunuh
+        -- Animasi "berdiri" (stand) dari model character.b3d: frame 0-79
+        self.object:set_animation({x = 0, y = 79}, 30, 0, true)
+        -- Hindari NPC jatuh/terdorong gravitasi berlebih
+        self.object:set_acceleration({x = 0, y = -9.8, z = 0})
     end,
     on_rightclick = function(self, clicker)
         if not clicker or not clicker:is_player() then return end
